@@ -5,13 +5,23 @@ from playwright.sync_api import sync_playwright
 
 URL = "https://eth.blockscout.com/txs"
 REAL_ROWS_LINK = 'table tbody a[href^="/tx/"]:not([data-loading="true"])'
-NUM_PAGES = 3
+NUM_PAGES = 10
 
 
-def wait_for_rows(page) -> None:
+def wait_for_rows(page, previous_first: str | None = None) -> None:
     # need some work here for checking new rows with old ones
     try:
-        page.wait_for_selector(REAL_ROWS_LINK, timeout=30000)
+        if previous_first is None:
+            page.wait_for_selector(REAL_ROWS_LINK, timeout=30000)  # first page
+        else:
+            page.wait_for_function(
+                """(old) => {
+                        const a = document.querySelector('table tbody a[href^="/tx/"]:not([data-loading="true"])');
+                        return a && a.getAttribute('href') !== old;
+                    }""",
+                arg=previous_first,
+                timeout=30000,
+            )
     except PlaywrightTimeout:
         page.screenshot(path="debug.png", full_page=True)
         raise
@@ -33,10 +43,15 @@ def next_page(page) -> str | None:
     if next_btn.is_disabled():
         return None
 
+    before = page.locator(REAL_ROWS_LINK).first.get_attribute("href")
     next_btn.click()
 
     # wait for rows to load
-    wait_for_rows(page)
+    try:
+        wait_for_rows(page, before)
+    except PlaywrightTimeout:
+        print("page did not change after click, stopping")
+        return None
 
     # scroll down to bottom of the page
     scroll_down(page)
@@ -66,7 +81,7 @@ def fetch_page(url: str, page) -> str:
 def scrape_page(soup: BeautifulSoup) -> list:
     txs = []
     for row in soup.select("table tbody tr"):
-        tag = row.select_one("a[href^='/tx/']")
+        tag = row.select_one("a[href^='/tx/']:not([data-loading='true'])")
         if tag is None:
             continue
         transaction_id = tag.get("href").split("/tx/")[1]
@@ -75,11 +90,14 @@ def scrape_page(soup: BeautifulSoup) -> list:
         timestamp = new_tag.get_text(strip=True)
 
         tags = row.select("a[href^='/address/']")
-        sender_address = tags[0].get("href").split("/address/")[1]
-        recipient_address = tags[1].get("href").split("/address/")[1]
+        sender_address = tags[0].get("href").split("/address/")[1] if tags else None
+        recipient_address = (
+            tags[1].get("href").split("/address/")[1] if len(tags) > 1 else None
+        )
 
         new_tag2 = row.select_one("td:nth-of-type(7)")
         amount_transferred = new_tag2.get_text(strip=True).split("$")[0]
+
         txs.append(
             {
                 "transaction_id": transaction_id,
@@ -116,7 +134,7 @@ def main() -> None:
         page = browser.new_page()
         html = fetch_page(URL, page)
 
-        for _ in range(NUM_PAGES):
+        for i in range(NUM_PAGES):
             soup = BeautifulSoup(html, "html.parser")
             page_data = scrape_page(soup)
 
