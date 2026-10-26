@@ -9,19 +9,22 @@ NUM_PAGES = 10
 
 
 def wait_for_rows(page, previous_first: str | None = None) -> None:
-    # need some work here for checking new rows with old ones
+
     try:
-        if previous_first is None:
-            page.wait_for_selector(REAL_ROWS_LINK, timeout=30000)  # first page
-        else:
-            page.wait_for_function(
-                """(old) => {
-                        const a = document.querySelector('table tbody a[href^="/tx/"]:not([data-loading="true"])');
-                        return a && a.getAttribute('href') !== old;
-                    }""",
-                arg=previous_first,
-                timeout=30000,
-            )
+        page.wait_for_function(
+            """(old) => {
+                const links = document.querySelectorAll(
+                    'table tbody a[href^="/tx/"]:not([data-loading="true"])');
+                const loading = document.querySelectorAll(
+                    'table tbody [data-loading="true"]');
+
+                if (links.length === 0 || loading.length > 0) return false;  // not ready
+                if (old === null) return true;                               // first page
+                return links[0].getAttribute('href') !== old;                // next pages
+            }""",
+            arg=previous_first,  # None becomes null in JavaScript
+            timeout=30000,
+        )
     except PlaywrightTimeout:
         page.screenshot(path="debug.png", full_page=True)
         raise
@@ -40,7 +43,7 @@ def scroll_down(page) -> None:
 
 def next_page(page) -> str | None:
     next_btn = page.get_by_role("button", name="Next page")
-    if next_btn.is_disabled():
+    if next_btn.count() == 0 or next_btn.is_disabled():
         return None
 
     before = page.locator(REAL_ROWS_LINK).first.get_attribute("href")
@@ -73,6 +76,7 @@ def fetch_page(url: str, page) -> str:
     )
     # scroll down to bottom of the page
     scroll_down(page)
+    wait_for_rows(page)
 
     html = page.content()
     return html
@@ -87,7 +91,7 @@ def scrape_page(soup: BeautifulSoup) -> list:
         transaction_id = tag.get("href").split("/tx/")[1]
 
         new_tag = tag.parent.find_next_sibling("div")
-        timestamp = new_tag.get_text(strip=True)
+        timestamp = new_tag.get_text(strip=True) if new_tag else None
 
         tags = row.select("a[href^='/address/']")
         sender_address = tags[0].get("href").split("/address/")[1] if tags else None
@@ -96,7 +100,9 @@ def scrape_page(soup: BeautifulSoup) -> list:
         )
 
         new_tag2 = row.select_one("td:nth-of-type(7)")
-        amount_transferred = new_tag2.get_text(strip=True).split("$")[0]
+        amount_transferred = (
+            new_tag2.get_text(strip=True).split("$")[0] if new_tag2 else None
+        )
 
         txs.append(
             {
@@ -128,7 +134,7 @@ def save_to_csv(data: list) -> None:
 
 
 def main() -> None:
-    data = {}
+    data: dict[str, dict[str, str]] = {}
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page()
@@ -138,9 +144,16 @@ def main() -> None:
             soup = BeautifulSoup(html, "html.parser")
             page_data = scrape_page(soup)
 
+            before_count = len(data)
             for row in page_data:  # removing duplicates
                 data[row["transaction_id"]] = row
+            print(
+                f"page {i + 1}: {len(page_data)} rows, "
+                f"{len(data) - before_count} new, {len(data)} total"
+            )
 
+            if i == NUM_PAGES - 1:  # don't click after the last page
+                break
             html = next_page(page)
             if html is None:
                 break
