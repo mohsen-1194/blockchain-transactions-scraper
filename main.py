@@ -1,14 +1,14 @@
 import pandas as pd
 from bs4 import BeautifulSoup
+from playwright.sync_api import Browser, Page, sync_playwright
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
-from playwright.sync_api import sync_playwright
 
 URL = "https://eth.blockscout.com/txs"
 REAL_ROWS_LINK = 'table tbody a[href^="/tx/"]:not([data-loading="true"])'
 NUM_PAGES = 10
 
 
-def wait_for_rows(page, previous_first: str | None = None) -> None:
+def wait_for_rows(page: Page, previous_first: str | None = None) -> None:
 
     try:
         page.wait_for_function(
@@ -30,7 +30,7 @@ def wait_for_rows(page, previous_first: str | None = None) -> None:
         raise
 
 
-def scroll_down(page) -> None:
+def scroll_down(page: Page) -> None:
     previous = 0
     for _ in range(10):  # safety limit
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
@@ -41,7 +41,7 @@ def scroll_down(page) -> None:
         previous = count
 
 
-def next_page(page) -> str | None:
+def next_page(page: Page) -> str | None:
     next_btn = page.get_by_role("button", name="Next page")
     if next_btn.count() == 0 or next_btn.is_disabled():
         return None
@@ -63,7 +63,7 @@ def next_page(page) -> str | None:
     return html
 
 
-def fetch_page(url: str, page) -> str:
+def fetch_page(url: str, page: Page) -> str:
     page.goto(url)
 
     # wait for rows to load
@@ -136,8 +136,8 @@ def save_to_csv(data: list) -> None:
 def main() -> None:
     data: dict[str, dict[str, str]] = {}
     with sync_playwright() as p:
-        browser = p.chromium.launch()
-        page = browser.new_page()
+        browser: Browser = p.chromium.launch()
+        page: Page = browser.new_page()
         html = fetch_page(URL, page)
 
         for i in range(NUM_PAGES):
